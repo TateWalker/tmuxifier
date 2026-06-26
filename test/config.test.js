@@ -103,8 +103,8 @@ test('config.json overrides defaults and sits below env', async () => {
 
 test('auth mode defaults to password; oauth/google are selectable; unknown falls back', () => {
   expect(loadConfig({}, { env: {}, cwd: '/app' }).authMode).toBe('password');
-  expect(loadConfig({}, { env: { TMUXIFIER_AUTH_MODE: 'oauth' }, cwd: '/app' }).authMode).toBe('google');
-  expect(loadConfig({}, { env: { TMUXIFIER_AUTH_MODE: 'google' }, cwd: '/app' }).authMode).toBe('google');
+  expect(loadConfig({}, { env: { TMUXIFIER_AUTH_MODE: 'oauth' }, cwd: '/app' }).authMode).toBe('oauth');
+  expect(loadConfig({}, { env: { TMUXIFIER_AUTH_MODE: 'google' }, cwd: '/app' }).authMode).toBe('oauth');
   expect(loadConfig({}, { env: { TMUXIFIER_AUTH_MODE: 'banana' }, cwd: '/app' }).authMode).toBe('password');
 });
 
@@ -191,14 +191,16 @@ test('localShell invalid values are normalized to none', () => {
 });
 
 test('requiredConfigError: oauth mode lists every missing field', () => {
-  const msg = requiredConfigError({ authMode: 'google', cookieSecret: 's', allowedEmails: [] });
-  expect(msg).toMatch(/TMUXIFIER_OAUTH_CLIENT_ID/);
-  expect(msg).toMatch(/TMUXIFIER_OAUTH_CLIENT_SECRET/);
+  const msg = requiredConfigError({ authMode: 'oauth', cookieSecret: 's', allowedEmails: [] });
+  expect(msg).toMatch(/TMUXIFIER_OIDC_ISSUER_URL/);
+  expect(msg).toMatch(/TMUXIFIER_OIDC_CLIENT_ID/);
+  expect(msg).toMatch(/TMUXIFIER_OIDC_CLIENT_SECRET/);
   expect(msg).toMatch(/TMUXIFIER_BASE_EXTERNAL_URL/);
   expect(msg).toMatch(/TMUXIFIER_ALLOWED_EMAILS/);
   expect(requiredConfigError({
-    authMode: 'google', cookieSecret: 's',
-    googleClientId: 'a', googleClientSecret: 'b', publicUrl: 'https://x', allowedEmails: ['a@b.com'],
+    authMode: 'oauth', cookieSecret: 's',
+    oidcIssuerUrl: 'https://sso.example.com', oidcClientId: 'a', oidcClientSecret: 'b',
+    publicUrl: 'https://x', allowedEmails: ['a@b.com'],
   })).toBeNull();
 });
 
@@ -606,4 +608,55 @@ test('TMUXIFIER_VOICE absent leaves voice enabled when bin+model are set', () =>
     cwd: '/repo',
   });
   expect(c.voiceEnabled).toBe(true);
+});
+
+test('TMUXIFIER_OIDC_* keys are loaded and mapped correctly', () => {
+  const c = loadConfig({}, {
+    env: {
+      TMUXIFIER_AUTH_MODE: 'oauth',
+      TMUXIFIER_OIDC_ISSUER_URL: 'https://sso.example.com',
+      TMUXIFIER_OIDC_CLIENT_ID: 'myid',
+      TMUXIFIER_OIDC_CLIENT_SECRET: 'mysecret',
+      TMUXIFIER_OIDC_BUTTON_LABEL: 'Authentik',
+      TMUXIFIER_OIDC_SKIP_EMAIL_VERIFIED: 'true',
+      TMUXIFIER_BASE_EXTERNAL_URL: 'tmuxifier.example.com',
+      TMUXIFIER_ALLOWED_EMAILS: 'a@b.com',
+    },
+    cwd: '/app',
+  });
+  expect(c.authMode).toBe('oauth');
+  expect(c.oidcIssuerUrl).toBe('https://sso.example.com');
+  expect(c.oidcClientId).toBe('myid');
+  expect(c.oidcClientSecret).toBe('mysecret');
+  expect(c.oidcButtonLabel).toBe('Authentik');
+  expect(c.oidcSkipEmailVerified).toBe(true);
+});
+
+test('legacy google authMode auto-populates oidcIssuerUrl=https://accounts.google.com', () => {
+  const c = loadConfig({}, {
+    env: { TMUXIFIER_AUTH_MODE: 'google', TMUXIFIER_OAUTH_CLIENT_ID: 'x', TMUXIFIER_OAUTH_CLIENT_SECRET: 'y' },
+    cwd: '/app',
+  });
+  expect(c.authMode).toBe('oauth');
+  expect(c.oidcIssuerUrl).toBe('https://accounts.google.com');
+});
+
+test('explicit TMUXIFIER_OIDC_ISSUER_URL wins over legacy google auto-populate', () => {
+  const c = loadConfig({}, {
+    env: { TMUXIFIER_AUTH_MODE: 'google', TMUXIFIER_OIDC_ISSUER_URL: 'https://custom.sso.example.com' },
+    cwd: '/app',
+  });
+  expect(c.oidcIssuerUrl).toBe('https://custom.sso.example.com');
+});
+
+test('TMUXIFIER_OIDC_CLIENT_ID wins over legacy aliases', () => {
+  const c = loadConfig({}, {
+    env: {
+      TMUXIFIER_OIDC_CLIENT_ID: 'oidc-id',
+      TMUXIFIER_OAUTH_CLIENT_ID: 'oauth-id',
+      TMUXIFIER_GOOGLE_CLIENT_ID: 'google-id',
+    },
+    cwd: '/app',
+  });
+  expect(c.oidcClientId).toBe('oidc-id');
 });

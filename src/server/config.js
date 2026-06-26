@@ -154,6 +154,13 @@ export function loadConfig(overrides = {}, { env = process.env, cwd = process.cw
     rpId: e.TMUXIFIER_RP_ID,
     passkeyOnlyKillSwitch: e.TMUXIFIER_PASSKEY_ONLY,
     publicUrl: e.TMUXIFIER_BASE_EXTERNAL_URL ?? e.TMUXIFIER_PUBLIC_URL,
+    // New generic OIDC keys
+    oidcIssuerUrl: e.TMUXIFIER_OIDC_ISSUER_URL,
+    oidcClientId: e.TMUXIFIER_OIDC_CLIENT_ID ?? e.TMUXIFIER_OAUTH_CLIENT_ID ?? e.TMUXIFIER_GOOGLE_CLIENT_ID,
+    oidcClientSecret: e.TMUXIFIER_OIDC_CLIENT_SECRET ?? e.TMUXIFIER_OAUTH_CLIENT_SECRET ?? e.TMUXIFIER_GOOGLE_CLIENT_SECRET,
+    oidcButtonLabel: e.TMUXIFIER_OIDC_BUTTON_LABEL,
+    oidcSkipEmailVerified: e.TMUXIFIER_OIDC_SKIP_EMAIL_VERIFIED === 'true',
+    // Legacy aliases kept for backward-compat; new code uses oidcClientId/oidcClientSecret
     googleClientId: e.TMUXIFIER_OAUTH_CLIENT_ID ?? e.TMUXIFIER_GOOGLE_CLIENT_ID,
     googleClientSecret: e.TMUXIFIER_OAUTH_CLIENT_SECRET ?? e.TMUXIFIER_GOOGLE_CLIENT_SECRET,
     allowedEmails: e.TMUXIFIER_ALLOWED_EMAILS,
@@ -252,7 +259,10 @@ export function loadConfig(overrides = {}, { env = process.env, cwd = process.cw
     return s; // address/CIDR list, passed through to Fastify
   })();
   // Auth mode: password (default) or oauth. "google" is accepted as a legacy alias.
-  merged.authMode = ['oauth', 'google'].includes(merged.authMode) ? 'google' : 'password';
+  const wasGoogle = merged.authMode === 'google';
+  merged.authMode = ['oauth', 'google'].includes(merged.authMode) ? 'oauth' : 'password';
+  // Legacy google mode: auto-supply the Google issuer URL when none was given.
+  if (wasGoogle && !merged.oidcIssuerUrl) merged.oidcIssuerUrl = 'https://accounts.google.com';
   merged.publicUrl = normalizePublicUrl(merged.publicUrl);
   // rpId === null means passkeys are unavailable at this deployment (an
   // IP-addressed one). rpIdError is set only for an explicit unusable value.
@@ -298,13 +308,14 @@ export function requiredConfigError(config) {
     return 'Missing TMUXIFIER_COOKIE_SECRET. Run: npm run set-password (password mode) or npm run gen-secret (oauth mode).';
   }
   if (config.rpIdError) return config.rpIdError;
-  if (config.authMode === 'google') {
+  if (config.authMode === 'oauth') {
     const missing = [];
-    if (!config.googleClientId) missing.push('TMUXIFIER_OAUTH_CLIENT_ID');
-    if (!config.googleClientSecret) missing.push('TMUXIFIER_OAUTH_CLIENT_SECRET');
+    if (!config.oidcIssuerUrl) missing.push('TMUXIFIER_OIDC_ISSUER_URL');
+    if (!config.oidcClientId) missing.push('TMUXIFIER_OIDC_CLIENT_ID');
+    if (!config.oidcClientSecret) missing.push('TMUXIFIER_OIDC_CLIENT_SECRET');
     if (!config.publicUrl) missing.push('TMUXIFIER_BASE_EXTERNAL_URL');
     if (!config.allowedEmails || config.allowedEmails.length === 0) missing.push('TMUXIFIER_ALLOWED_EMAILS');
-    return missing.length ? `Google auth mode requires: ${missing.join(', ')}` : null;
+    return missing.length ? `OAuth mode requires: ${missing.join(', ')}` : null;
   }
   if (!config.passwordHash) return 'Tmuxifier is not configured. Run: npm run set-password';
   return null;

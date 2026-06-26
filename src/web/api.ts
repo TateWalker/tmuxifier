@@ -92,7 +92,7 @@ async function j<T>(res: Response): Promise<T> {
 export const api = {
   async me() { return (await fetch('/api/me')).ok; },
   async authInfo() {
-    return j<{ mode: 'password' | 'google'; passkey?: { enrolled: number; rpId: string | null; only: boolean } }>(
+    return j<{ mode: 'password' | 'oauth' | 'google'; buttonLabel?: string; passkey?: { enrolled: number; rpId: string | null; only: boolean } }>(
       await fetch('/api/auth/info'));
   },
   async login(password: string) { return j<{ ok: boolean }>(await fetch('/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) })); },

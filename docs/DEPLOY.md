@@ -59,36 +59,72 @@ TLS keys makes Tmuxifier serve HTTPS directly and marks the session cookie `Secu
 TLS, keep `TMUXIFIER_BIND` on `127.0.0.1` — serving the login over plain HTTP on a routable
 address sends the password in cleartext.
 
-### Google OAuth behind a Cloudflare tunnel
+### Generic OAuth / OIDC (Authentik, Keycloak, Google, etc.)
 
-For a Cloudflare tunnel such as `https://tmuxifier.example.com`, TLS terminates at
-Cloudflare and the local Tmuxifier process can still speak plain HTTP. Set the public URL so
-OAuth redirect URIs are correct and the browser receives a `Secure` session cookie:
+Tmuxifier supports any OIDC-compliant provider. Endpoints are discovered automatically from
+`<TMUXIFIER_OIDC_ISSUER_URL>/.well-known/openid-configuration`, so no endpoint URLs need to
+be hard-coded — only the issuer base URL matters.
+
+#### Authentik behind a Cloudflare tunnel
+
+For a setup such as `https://tmuxifier.example.com` behind Cloudflare:
 
 ```ini
 TMUXIFIER_AUTH_MODE=oauth
 TMUXIFIER_BASE_EXTERNAL_URL=tmuxifier.example.com
-TMUXIFIER_OAUTH_CLIENT_ID=...
-TMUXIFIER_OAUTH_CLIENT_SECRET=...
+TMUXIFIER_OIDC_ISSUER_URL=https://authentik.example.com/application/o/tmuxifier
+TMUXIFIER_OIDC_CLIENT_ID=<paste-from-authentik>
+TMUXIFIER_OIDC_CLIENT_SECRET=<paste-from-authentik>
+TMUXIFIER_OIDC_BUTTON_LABEL=Authentik
 TMUXIFIER_ALLOWED_EMAILS=you@example.com
 ```
 
-Generate the cookie secret without creating a password login:
+Generate the cookie secret:
 
 ```bash
 npm run gen-secret
+```
+
+**In Authentik:**
+
+1. **Providers → Create → OAuth2/OpenID Connect Provider**
+   - Name: `tmuxifier`
+   - Client type: Confidential
+   - Redirect URI: `https://tmuxifier.example.com/api/auth/oauth/callback`
+   - Scopes: `openid`, `email`
+   - Save and note the **Client ID** and **Client Secret**
+2. **Applications → Create** — link it to the provider you just created.
+3. The issuer URL is the provider's base URL shown in Authentik's OIDC well-known info page.
+   It typically looks like `https://authentik.example.com/application/o/<slug>/` — use that
+   (without the `.well-known/openid-configuration` suffix) as `TMUXIFIER_OIDC_ISSUER_URL`.
+4. If your Authentik users don't have `email_verified` in their tokens, add:
+   `TMUXIFIER_OIDC_SKIP_EMAIL_VERIFIED=true`
+
+Restart the service and the login page will show "Login with Authentik" instead of a password
+form. `TMUXIFIER_ALLOWED_EMAILS` is an exact-email allowlist, matched case-insensitively.
+
+#### Google OAuth behind a Cloudflare tunnel
+
+```ini
+TMUXIFIER_AUTH_MODE=oauth
+TMUXIFIER_BASE_EXTERNAL_URL=tmuxifier.example.com
+TMUXIFIER_OIDC_ISSUER_URL=https://accounts.google.com
+TMUXIFIER_OIDC_CLIENT_ID=<paste-from-google-console>
+TMUXIFIER_OIDC_CLIENT_SECRET=<paste-from-google-console>
+TMUXIFIER_ALLOWED_EMAILS=you@example.com
 ```
 
 In Google Cloud Console, go to **APIs & Services → Credentials**, create an **OAuth client
 ID** with application type **Web application**, and add this authorized redirect URI:
 
 ```text
-https://tmuxifier.example.com/api/auth/google/callback
+https://tmuxifier.example.com/api/auth/oauth/callback
 ```
 
-Copy the client id and secret into `.env`, restart the service, and the login page will show
-Google sign-in instead of the password form. `TMUXIFIER_ALLOWED_EMAILS` is a comma-separated
-exact-email allowlist, matched case-insensitively.
+> **Legacy variable names** — `TMUXIFIER_OAUTH_CLIENT_ID`, `TMUXIFIER_OAUTH_CLIENT_SECRET`,
+> `TMUXIFIER_GOOGLE_CLIENT_ID`, `TMUXIFIER_GOOGLE_CLIENT_SECRET`, and `TMUXIFIER_AUTH_MODE=google`
+> are all still accepted. The old `/api/auth/google/callback` redirect URI also still works (it
+> redirects to the new path). Prefer the `TMUXIFIER_OIDC_*` names for new deployments.
 
 ## Passkeys and the relying party id
 

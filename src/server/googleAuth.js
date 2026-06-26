@@ -1,5 +1,8 @@
-import { createHash, randomBytes } from 'node:crypto';
+// Backward-compatibility shim. New code should import from oidcAuth.js directly.
+// This file re-exports everything so existing imports (tests, server.js) continue to work.
+export { createGoogleAuth, createOidcAuth, fetchDiscovery, pkcePair, randomState, base64url } from './oidcAuth.js';
 
+<<<<<<< HEAD
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
@@ -70,3 +73,5 @@ export function createGoogleAuth({ clientId, clientSecret, redirectUri, allowedE
     },
   };
 }
+=======
+>>>>>>> d05e96a (feat(auth): add generic OIDC provider support (Authentik, Keycloak, Google, etc.))

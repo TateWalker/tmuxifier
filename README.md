@@ -72,13 +72,16 @@ high: built-in defaults → `config.json` → `.env` → shell environment.
 | Proxmox provision job history kept | `TMUXIFIER_PVE_MAX_JOBS` | `50` |
 | Proxmox default management pubkey | `TMUXIFIER_PVE_DEFAULT_PUBKEY` | auto-detect `~/.ssh/*.pub` |
 | trust reverse-proxy X-Forwarded-For | `TMUXIFIER_TRUST_PROXY` | off |
-| auth mode | `TMUXIFIER_AUTH_MODE` | `password` |
-| password hash | `TMUXIFIER_PASSWORD_HASH` | — (required) |
-| cookie secret | `TMUXIFIER_COOKIE_SECRET` | — (required) |
-| base external URL | `TMUXIFIER_BASE_EXTERNAL_URL` | (none) |
-| OAuth client id | `TMUXIFIER_OAUTH_CLIENT_ID` | (none) |
-| OAuth client secret | `TMUXIFIER_OAUTH_CLIENT_SECRET` | (none) |
-| allowed Google emails | `TMUXIFIER_ALLOWED_EMAILS` | (none) |
+ | auth mode | `TMUXIFIER_AUTH_MODE` | `password` |
+ | password hash | `TMUXIFIER_PASSWORD_HASH` | — (required) |
+ | cookie secret | `TMUXIFIER_COOKIE_SECRET` | — (required) |
+ | base external URL | `TMUXIFIER_BASE_EXTERNAL_URL` | (none) |
+ | OIDC issuer URL | `TMUXIFIER_OIDC_ISSUER_URL` | (none) |
+ | OIDC client id | `TMUXIFIER_OIDC_CLIENT_ID` | (none) |
+ | OIDC client secret | `TMUXIFIER_OIDC_CLIENT_SECRET` | (none) |
+ | OIDC login button label | `TMUXIFIER_OIDC_BUTTON_LABEL` | `OAuth` |
+ | skip email\_verified check | `TMUXIFIER_OIDC_SKIP_EMAIL_VERIFIED` | `false` |
+ | allowed OAuth emails | `TMUXIFIER_ALLOWED_EMAILS` | (none) |
 | passkey relying party id | `TMUXIFIER_RP_ID` | derived from base external URL, else `localhost` |
 | passkey-only break-glass | `TMUXIFIER_PASSKEY_ONLY` | (unset) |
 | data dir | `TMUXIFIER_DATA_DIR` | `<repo>/data` |
@@ -110,7 +113,8 @@ As an alternative to `.env`, a `config.json` in the repo root works too, using c
 `fleetMaxJobs`, `fleetMaxOutputBytes`, `healthHistoryMax`, `healthEventsMax`, `healthCpuWarnPct`,
 `healthMemWarnPct`, `healthDiskWarnPct`, `healthThresholdHysteresisPct`, `agentIdleSec`, `pvePollMs`, `pveTimeoutMs`, `pveProvisionTimeoutMs`,
 `pveLeaseTimeoutMs`, `pveMaxJobs`, `pveDefaultPubKeyPath`, `authMode`, `publicUrl`, `rpId`,
-`passkeyOnlyKillSwitch`, `googleClientId`, `googleClientSecret`, `allowedEmails`, `dataDir`,
+`passkeyOnlyKillSwitch`, `oidcIssuerUrl`, `oidcClientId`, `oidcClientSecret`, `oidcButtonLabel`,
+`oidcSkipEmailVerified`, `allowedEmails`, `dataDir`,
 `controlDir`, `sshConfigFile`, `tlsCert`, `tlsKey`). The UI also persists `localShell` in
 `config.json`; it does not have an env key.
 `TMUXIFIER_SSH_CONFIG`/`sshConfigFile` is passed to `ssh` as `-F`, so it is an alternate config
@@ -142,9 +146,9 @@ notification permission and per-event-kind toggles); see
 
 ## Authentication
 `TMUXIFIER_AUTH_MODE` selects the primary login method: `password` (default) or `oauth`, which
-replaces the password form with Google sign-in. These two remain mutually exclusive with each
-other — pick one. A passkey (below) is a separate, additive third way in, available under
-**either** setting.
+replaces the password form with a "Login with \<provider\>" button. These two remain mutually
+exclusive with each other — pick one. A passkey (below) is a separate, additive third way in,
+available under **either** setting.
 
 Password mode:
 ```bash
@@ -152,7 +156,12 @@ npm run set-password
 ```
 This writes `TMUXIFIER_PASSWORD_HASH` and, if absent, `TMUXIFIER_COOKIE_SECRET` to `.env`.
 
-OAuth mode:
+### Generic OAuth / OIDC
+
+Tmuxifier supports any OIDC-compliant provider — Authentik, Keycloak, Okta, Dex, Google, and
+others. Endpoints are discovered automatically from
+`<TMUXIFIER_OIDC_ISSUER_URL>/.well-known/openid-configuration`.
+
 ```bash
 npm run gen-secret
 ```
@@ -160,25 +169,43 @@ Then set these `.env` keys:
 ```ini
 TMUXIFIER_AUTH_MODE=oauth
 TMUXIFIER_BASE_EXTERNAL_URL=tmuxifier.example.com
-TMUXIFIER_OAUTH_CLIENT_ID=...
-TMUXIFIER_OAUTH_CLIENT_SECRET=...
+TMUXIFIER_OIDC_ISSUER_URL=https://sso.example.com/application/o/tmuxifier
+TMUXIFIER_OIDC_CLIENT_ID=<your-client-id>
+TMUXIFIER_OIDC_CLIENT_SECRET=<your-client-secret>
 TMUXIFIER_ALLOWED_EMAILS=you@example.com,teammate@example.com
+# Optional: label for the login button (defaults to "OAuth")
+TMUXIFIER_OIDC_BUTTON_LABEL=Authentik
 ```
-Tmuxifier treats a scheme-less public URL as HTTPS. In Google Cloud Console, create an OAuth
-client ID for a web application and register this
-authorized redirect URI:
+
+Register this redirect URI in your provider:
 ```text
-https://tmuxifier.example.com/api/auth/google/callback
+https://tmuxifier.example.com/api/auth/oauth/callback
 ```
-The allowlist is exact email addresses only, matched case-insensitively. Domain wildcards are
-not supported. The older `TMUXIFIER_PUBLIC_URL`, `TMUXIFIER_GOOGLE_CLIENT_ID`,
-`TMUXIFIER_GOOGLE_CLIENT_SECRET`, and `TMUXIFIER_AUTH_MODE=google` names are still accepted.
+The allowlist is exact email addresses only, matched case-insensitively.
+
+#### Authentik setup
+
+1. **Applications → Providers → Create → OAuth2/OpenID Connect Provider**
+   - Redirect URI: `https://tmuxifier.example.com/api/auth/oauth/callback`
+   - Scopes: `openid`, `email`
+   - Note the **Client ID** and **Client Secret**
+2. **Applications → Create** and link to that provider.
+3. The issuer URL is the base of the provider's well-known URL:
+   `https://authentik.example.com/application/o/<slug>/`
+4. If your users lack `email_verified` in tokens: `TMUXIFIER_OIDC_SKIP_EMAIL_VERIFIED=true`
+
+#### Google setup
+
+Set `TMUXIFIER_OIDC_ISSUER_URL=https://accounts.google.com` and register the redirect URI in
+Google Cloud Console. The older `TMUXIFIER_PUBLIC_URL`, `TMUXIFIER_OAUTH_CLIENT_ID`,
+`TMUXIFIER_GOOGLE_CLIENT_ID`, `TMUXIFIER_GOOGLE_CLIENT_SECRET`, and `TMUXIFIER_AUTH_MODE=google`
+names are still accepted as aliases.
 
 ### Passkeys
 
 A passkey is an additional way in, available in **either** auth mode alongside password or
 Google — it does not replace `TMUXIFIER_AUTH_MODE`. Enroll one from **Settings → Passkeys**
-while already signed in (enrolling requires an existing session, so password/Google remains the
+while already signed in (enrolling requires an existing session, so password/OAuth remains the
 bootstrap and the recovery route); afterwards the login screen also offers **Sign in with a
 passkey**.
 
@@ -188,14 +215,14 @@ from `TMUXIFIER_RP_ID` if set, else the hostname of `TMUXIFIER_BASE_EXTERNAL_URL
 
 - The browser must reach Tmuxifier at `https://<hostname>` or `http://localhost`. **An IP
   address cannot be a relying party id** — a deployment reached by IP simply shows passkeys as
-  unavailable, with password/Google sign-in unaffected. That's only true when the id is
+  unavailable, with password/OAuth sign-in unaffected. That's only true when the id is
   *derived* this way, though: an explicit `TMUXIFIER_RP_ID` that isn't a valid domain name is
   instead treated as a configuration mistake and **fails startup** with an explanatory message.
 - Changing that hostname invalidates every enrolled passkey. Settings → Passkeys detects the
   mismatch and names the hostname the existing passkeys belong to.
 
 Optionally, **Require a passkey** (Settings → Passkeys → sign-in policy) disables password and
-Google sign-in entirely. Arming it is guarded against locking you out by accident: arming asks
+OAuth sign-in entirely. Arming it is guarded against locking you out by accident: arming asks
 your browser for a fresh passkey confirmation first (so it only succeeds where a passkey
 actually works right now), it's refused (409) unless at least one passkey is enrolled *and*
 usable against the server's current relying party id, and removing your last passkey turns it

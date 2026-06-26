@@ -293,19 +293,22 @@ function readLoginError(): string {
   const code = new URLSearchParams(location.search).get('error');
   if (!code) return '';
   history.replaceState(null, '', location.pathname);
-  return code === 'forbidden' ? 'This Google account is not allowed.'
-    : code === 'google' ? 'Google sign-in failed. Please try again.'
+  return code === 'forbidden' ? 'This account is not allowed.'
+    : code === 'oauth' ? 'OAuth sign-in failed. Please try again.'
+    : code === 'google' ? 'OAuth sign-in failed. Please try again.'
     : code === 'state' ? 'Login session expired. Please try again.'
-    : code === 'passkey-only' ? 'This Tmuxifier requires a passkey. Password and Google sign-in are disabled.'
+    : code === 'passkey-only' ? 'This Tmuxifier requires a passkey. Password and OAuth sign-in are disabled.'
     : 'Sign-in failed. Please try again.';
 }
 
 async function renderLogin() {
-  let mode: 'password' | 'google' = 'password';
+  let mode: 'password' | 'oauth' | 'google' = 'password';
+  let buttonLabel = 'OAuth';
   let passkey = { enrolled: 0, rpId: null as string | null, only: false };
   try {
     const info = await api.authInfo();
     mode = info.mode;
+    if (info.buttonLabel) buttonLabel = info.buttonLabel;
     if (info.passkey) passkey = info.passkey;
   } catch {}
   const err = readLoginError();
@@ -353,18 +356,34 @@ async function renderLogin() {
     return;
   }
 
-  if (passkey.only || mode === 'google') {
-    const google = passkey.only ? '' : `<a id="gsignin" class="gbtn" href="/api/auth/google/login">
-          <svg class="google-mark" viewBox="0 0 18 18" aria-hidden="true">
-            <path fill="#4285f4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62z"/>
-            <path fill="#34a853" d="M9 18c2.43 0 4.47-.81 5.96-2.18l-2.91-2.26c-.8.54-1.84.86-3.05.86-2.34 0-4.33-1.58-5.04-3.71H.96v2.33A9 9 0 0 0 9 18z"/>
-            <path fill="#fbbc05" d="M3.96 10.71a5.41 5.41 0 0 1 0-3.42V4.96H.96a9 9 0 0 0 0 8.08l3-2.33z"/>
-            <path fill="#ea4335" d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .96 4.96l3 2.33C4.67 5.16 6.66 3.58 9 3.58z"/>
-          </svg>
-          <span>Sign in with Google</span>
-        </a>`;
-    app.innerHTML = `<div class="login">${brand}${google}${passkeyBtn}<p id="err" class="err">${err}</p></div>`;
+  const isOAuth = mode === 'oauth' || mode === 'google';
+  if (passkey.only || isOAuth) {
+    const oauthBtn = (isOAuth && !passkey.only)
+      ? `<a id="oauth-signin" class="oauth-btn" href="/api/auth/oauth/login">Login with ${buttonLabel}</a>`
+      : '';
+    app.innerHTML = `<div class="login">${brand}${oauthBtn}${passkeyBtn}<p id="err" class="err">${err}</p></div>`;
     wirePasskeyButton();
+
+    // Attempt silent sign-in via hidden iframe when in OAuth mode.
+    if (isOAuth && !passkey.only) {
+      const SILENT_TIMEOUT_MS = 5000;
+      const iframe = document.createElement('iframe');
+      iframe.src = '/api/auth/oauth/silent';
+      iframe.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute;';
+      document.body.appendChild(iframe);
+      let silentDone = false;
+      const timer = window.setTimeout(() => {
+        if (!silentDone) { silentDone = true; iframe.remove(); }
+      }, SILENT_TIMEOUT_MS);
+      window.addEventListener('message', function onMsg(e) {
+        if (e.source !== iframe.contentWindow) return;
+        silentDone = true;
+        clearTimeout(timer);
+        iframe.remove();
+        window.removeEventListener('message', onMsg);
+        if (e.data === 'authed') window.location.reload();
+      });
+    }
     return;
   }
 

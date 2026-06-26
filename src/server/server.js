@@ -7,7 +7,7 @@ import cookie from '@fastify/cookie';
 import websocket from '@fastify/websocket';
 import { verifyPassword, COOKIE_NAME, cookieOptions, sessionValue, sessionValueValid } from './auth.js';
 import { createLoginRateLimiter } from './rateLimit.js';
-import { createGoogleAuth, pkcePair, randomState } from './googleAuth.js';
+import { createOidcAuth, pkcePair, randomState } from './oidcAuth.js';
 import { buildEnsureTmuxRemote, resolveTools } from './boxActions.js';
 import { assertBoxSafe } from './sshCommand.js';
 import { upsertConfigFile } from './configFile.js';
@@ -88,7 +88,9 @@ async function killTmuxSession(sessionName) {
   await execFileAsync('tmux', killSessionArgs(sessionName), { timeout: 5000 });
 }
 
-export function buildServer({ config, store, sessions, statusChecker, statusPoller, history, boxActions, localShellActions, fleetManager, proxmoxStore, provisionManager, makeProxmoxClient, inspectEndpoint, netboxStore, netboxTest = testNetbox, makeNetboxClient = createNetboxClient, defaultPublicKey = () => null, googleAuth, localSession = 'local', killLocalSession = killTmuxSession, removeBox = null, proxmoxInventory, lifecycleManager, saveUploadLocally = saveLocalUpload, injectLocalUpload = injectLocalUploadPath, injectLocalText = injectLocalTextDefault, knownHosts, setupManager, aiAuthSeeder, passkeyStore = null, passkeyChallenges = null, voiceEngine = null, voiceStore = null, voiceInstallManager = null, resolveVoice = null, getVoiceEngine = null, modelInstalled = null, voiceEnabledInitial = null, log = (msg) => console.error(msg) }) {
+export function buildServer({ config, store, sessions, statusChecker, statusPoller, history, boxActions, localShellActions, fleetManager, proxmoxStore, provisionManager, makeProxmoxClient, inspectEndpoint, netboxStore, netboxTest = testNetbox, makeNetboxClient = createNetboxClient, defaultPublicKey = () => null, oidcAuth, googleAuth, localSession = 'local', killLocalSession = killTmuxSession, removeBox = null, proxmoxInventory, lifecycleManager, saveUploadLocally = saveLocalUpload, injectLocalUpload = injectLocalUploadPath, injectLocalText = injectLocalTextDefault, knownHosts, setupManager, aiAuthSeeder, passkeyStore = null, passkeyChallenges = null, voiceEngine = null, voiceStore = null, voiceInstallManager = null, resolveVoice = null, getVoiceEngine = null, modelInstalled = null, voiceEnabledInitial = null, log = (msg) => console.error(msg) }) {
+  // Normalize authMode here too, so tests that bypass loadConfig still work.
+  const authMode = (config.authMode === 'oauth' || config.authMode === 'google') ? 'oauth' : 'password';
   const httpsOpts =
     config.tlsCert && config.tlsKey
       ? { https: { key: fs.readFileSync(config.tlsKey), cert: fs.readFileSync(config.tlsCert) } }
@@ -150,13 +152,17 @@ export function buildServer({ config, store, sessions, statusChecker, statusPoll
   }
 
   const OAUTH_COOKIE = 'tmuxifier_oauth';
-  let google = googleAuth;
-  if (config.authMode === 'google' && !google) {
-    google = createGoogleAuth({
-      clientId: config.googleClientId,
-      clientSecret: config.googleClientSecret,
-      redirectUri: `${String(config.publicUrl).replace(/\/+$/, '')}/api/auth/google/callback`,
+  // Accept `oidcAuth` (new name) or `googleAuth` (deprecated alias) for test backward-compat.
+  let oidc = oidcAuth ?? googleAuth ?? null;
+  if (authMode === 'oauth' && !oidc) {
+    const baseUrl = String(config.publicUrl || '').replace(/\/+$/, '');
+    oidc = createOidcAuth({
+      issuerUrl: config.oidcIssuerUrl,
+      clientId: config.oidcClientId ?? config.googleClientId,
+      clientSecret: config.oidcClientSecret ?? config.googleClientSecret,
+      redirectUri: `${baseUrl}/api/auth/oauth/callback`,
       allowedEmails: config.allowedEmails,
+      skipEmailVerified: config.oidcSkipEmailVerified ?? false,
     });
   }
 
@@ -566,13 +572,14 @@ export function buildServer({ config, store, sessions, statusChecker, statusPoll
   }
 
   app.get('/api/auth/info', async () => {
-    // Same fetch-and-fail-open logic as the login gate and Google routes
+    // Same fetch-and-fail-open logic as the login gate and OAuth routes
     // below, via the shared passkeySnapshot() helper (see its comment) — one
     // disk read + JSON parse instead of a hand-rolled second copy. A read
     // failure degrades to "no passkeys" rather than 500ing the login page.
     const pk = await passkeySnapshot();
     return {
-      mode: config.authMode === 'google' ? 'google' : 'password',
+      mode: authMode === 'oauth' ? 'oauth' : 'password',
+      ...(authMode === 'oauth' ? { buttonLabel: config.oidcButtonLabel || 'OAuth' } : {}),
       // Unauthenticated on purpose: the login screen needs to know whether to
       // draw the passkey button. It exposes only the hostname the client is
       // already talking to, plus a count.
@@ -584,7 +591,7 @@ export function buildServer({ config, store, sessions, statusChecker, statusPoll
     };
   });
 
-  if (config.authMode !== 'google') {
+  if (authMode !== 'oauth') {
     app.post('/api/login', async (req, reply) => {
       if (passkeyOnlyArmed(await passkeySnapshot())) return reply.code(403).send({ error: 'passkey required' });
       const ip = req.ip;
@@ -597,37 +604,84 @@ export function buildServer({ config, store, sessions, statusChecker, statusPoll
     });
   }
 
-  if (config.authMode === 'google') {
-    app.get('/api/auth/google/login', async (req, reply) => {
-      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+  if (authMode === 'oauth') {
+    const baseUrl = String(config.publicUrl || '').replace(/\/+$/, '');
+    const standardCallbackUri = `${baseUrl}/api/auth/oauth/callback`;
+    const silentCallbackUri = `${baseUrl}/api/auth/oauth/silent-callback`;
+
+    // Minimal HTML page for the silent-login iframe.
+    function silentPage(message) {
+      return `<!doctype html><html><head><meta charset="utf-8"></head><body><script>
+(function(){try{window.parent.postMessage(${JSON.stringify(message)},'*')}catch(e){}})();
+</script></body></html>`;
+    }
+
+    // Helper: build auth URL and set the state cookie.
+    async function beginOAuth(reply, { prompt, callbackUri = standardCallbackUri } = {}) {
       const state = randomState();
       const { verifier, challenge } = pkcePair();
-      // SameSite=lax lets this short-lived state cookie survive Google's top-level redirect back.
       reply.setCookie(OAUTH_COOKIE, `${state}.${verifier}`, {
         httpOnly: true, sameSite: 'lax', secure: config.secureCookie, path: '/', signed: true, maxAge: 300,
       });
-      return reply.redirect(google.authorizationUrl({ state, codeChallenge: challenge }));
-    });
+      let url = await oidc.authorizationUrl({ state, codeChallenge: challenge, prompt });
+      const u = new URL(url);
+      u.searchParams.set('redirect_uri', callbackUri);
+      if (prompt) u.searchParams.set('prompt', prompt); else u.searchParams.delete('prompt');
+      return reply.redirect(u.toString());
+    }
 
-    app.get('/api/auth/google/callback', async (req, reply) => {
-      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+    // Helper: exchange code and set session cookie; returns { ok, error }.
+    async function handleCallback(req, reply, { redirectUriOverride } = {}) {
       const raw = req.cookies?.[OAUTH_COOKIE];
       reply.clearCookie(OAUTH_COOKIE, { path: '/' });
-      if (!raw) return reply.redirect('/?error=state');
+      if (!raw) return { ok: false, error: 'state' };
       const unsigned = app.unsignCookie(raw);
-      if (!unsigned.valid || !unsigned.value) return reply.redirect('/?error=state');
+      if (!unsigned.valid || !unsigned.value) return { ok: false, error: 'state' };
       const [savedState, verifier] = unsigned.value.split('.');
       const { code, state } = req.query;
-      if (!code || !state || state !== savedState) return reply.redirect('/?error=state');
+      if (!code || !state || state !== savedState) return { ok: false, error: 'state' };
       let result;
       try {
-        result = await google.exchangeCodeForEmail({ code, codeVerifier: verifier });
+        result = await oidc.exchangeCodeForEmail({ code, codeVerifier: verifier, redirectUri: redirectUriOverride });
       } catch {
-        return reply.redirect('/?error=google');
+        return { ok: false, error: 'oauth' };
       }
-      if (!result.emailVerified || !google.isAllowed(result.email)) return reply.redirect('/?error=forbidden');
+      if (!result.emailVerified || !oidc.isAllowed(result.email)) return { ok: false, error: 'forbidden' };
       reply.setCookie(COOKIE_NAME, sessionValue(), cookieOptions(config.secureCookie));
-      return reply.redirect('/');
+      return { ok: true };
+    }
+
+    app.get('/api/auth/oauth/login', async (req, reply) => {
+      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+      return beginOAuth(reply, { callbackUri: standardCallbackUri });
+    });
+
+    app.get('/api/auth/oauth/callback', async (req, reply) => {
+      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+      const r = await handleCallback(req, reply, { redirectUriOverride: standardCallbackUri });
+      return r.ok ? reply.redirect('/') : reply.redirect(`/?error=${r.error}`);
+    });
+
+    app.get('/api/auth/oauth/silent', async (req, reply) => {
+      return beginOAuth(reply, { prompt: 'none', callbackUri: silentCallbackUri });
+    });
+
+    app.get('/api/auth/oauth/silent-callback', async (req, reply) => {
+      if (req.query.error) return reply.type('text/html').send(silentPage('silent-failed'));
+      const r = await handleCallback(req, reply, { redirectUriOverride: silentCallbackUri });
+      return reply.type('text/html').send(silentPage(r.ok ? 'authed' : 'silent-failed'));
+    });
+
+    // Legacy redirect routes — check passkey-only before redirecting so existing
+    // tests and bookmarks that hit these URLs still get the passkey-only error.
+    app.get('/api/auth/google/login', async (req, reply) => {
+      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+      return reply.status(302).redirect('/api/auth/oauth/login');
+    });
+    app.get('/api/auth/google/callback', async (req, reply) => {
+      if (passkeyOnlyArmed(await passkeySnapshot())) return reply.redirect('/?error=passkey-only');
+      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      return reply.status(302).redirect(`/api/auth/oauth/callback${qs}`);
     });
   }
 
