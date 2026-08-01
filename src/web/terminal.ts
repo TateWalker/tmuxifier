@@ -365,7 +365,14 @@ export function openTerminal(
   }
   term.onData((d) => { if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'i', d })); });
 
-  const onResize = () => { fit.fit(); sendResize(); };
+  const onResize = () => {
+    // Skip if any ancestor is display:none (e.g. .stage-parking). fit() would
+    // compute 0-size dims and send a 2×1 resize to the box, corrupting the
+    // remote tmux session even while the pane is undocked and hidden.
+    if (!parent.offsetParent) return;
+    fit.fit();
+    sendResize();
+  };
   window.addEventListener('resize', onResize);
   connect();
 
@@ -428,7 +435,7 @@ export function openProvisionTerminal(
     if (!done) onComplete(-1);
   };
 
-  const onResize = () => { fit.fit(); };
+  const onResize = () => { if (parent.offsetParent) fit.fit(); };
   window.addEventListener('resize', onResize);
 
   return {

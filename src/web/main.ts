@@ -306,7 +306,8 @@ function filterAndPaint() {
 }
 
 function refitActiveTerminals() {
-  for (const t of tabs.values()) t.term.refit();
+  const docked = new Set(panesOf(stageRoot));
+  for (const [id, t] of tabs) if (docked.has(id)) t.term.refit();
 }
 
 async function start() {
