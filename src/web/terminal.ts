@@ -373,12 +373,17 @@ export function openTerminal(
     fit.fit();
     sendResize();
   };
-  window.addEventListener('resize', onResize);
+  // ResizeObserver fires whenever the pane container changes size — sidebar
+  // toggle, fleet panel open/close, split divider drag — without needing a
+  // window resize event. It subsumes the window 'resize' listener entirely:
+  // a browser window resize also resizes the pane body and triggers the observer.
+  const ro = new ResizeObserver(onResize);
+  ro.observe(parent);
   connect();
 
   return {
     focus: () => term.focus(),
-    dispose: () => { offUploads(); voice.dispose(); closedByUser = true; clearTimeout(stableTimer); clearTimeout(retryTimer); window.removeEventListener('resize', onResize); ws?.close(); term.dispose(); },
+    dispose: () => { offUploads(); voice.dispose(); closedByUser = true; clearTimeout(stableTimer); clearTimeout(retryTimer); ro.disconnect(); ws?.close(); term.dispose(); },
     refit: onResize,
   };
 }
@@ -436,11 +441,12 @@ export function openProvisionTerminal(
   };
 
   const onResize = () => { if (parent.offsetParent) fit.fit(); };
-  window.addEventListener('resize', onResize);
+  const ro = new ResizeObserver(onResize);
+  ro.observe(parent);
 
   return {
     dispose: () => {
-      window.removeEventListener('resize', onResize);
+      ro.disconnect();
       if (!done) { done = true; onComplete(-1); }
       ws.close();
       term.dispose();
